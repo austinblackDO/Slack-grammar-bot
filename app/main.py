@@ -4,15 +4,19 @@ import hmac
 import hashlib
 import asyncio
 import requests
+
 from fastapi import FastAPI, Request, HTTPException
 from dotenv import load_dotenv
 from gradient import AsyncGradient
 
+# Load env vars (local dev only; App Platform injects env vars automatically)
 load_dotenv()
 
 app = FastAPI()
 
-# --- Secrets ---
+# --------------------
+# Secrets
+# --------------------
 SLACK_SIGNING_SECRET = os.getenv("SLACK_SIGNING_SECRET")
 GRADIENT_MODEL_ACCESS_KEY = os.getenv("GRADIENT_MODEL_ACCESS_KEY")
 
@@ -22,16 +26,21 @@ if not SLACK_SIGNING_SECRET:
 if not GRADIENT_MODEL_ACCESS_KEY:
     raise RuntimeError("GRADIENT_MODEL_ACCESS_KEY not set")
 
-# --- Gradient async client (created once) ---
+# --------------------
+# Gradient async client (create once)
+# --------------------
 gradient_client = AsyncGradient(
     model_access_key=GRADIENT_MODEL_ACCESS_KEY
 )
 
-
+# --------------------
+# Slack request verification
+# --------------------
 def verify_slack_request(*, raw_body: bytes, timestamp: str, slack_signature: str):
     now = int(time.time())
     req_ts = int(timestamp)
 
+    # Prevent replay attacks (5 min window)
     if abs(now - req_ts) > 60 * 5:
         raise HTTPException(status_code=401, detail="Stale request")
 
@@ -48,11 +57,10 @@ def verify_slack_request(*, raw_body: bytes, timestamp: str, slack_signature: st
     if not hmac.compare_digest(computed_signature, slack_signature):
         raise HTTPException(status_code=401, detail="Invalid signature")
 
-
+# --------------------
+# Background grammar processing
+# --------------------
 async def process_grammar_async(text: str, response_url: str):
-    """
-    Calls serverless inference and sends result back to Slack.
-    """
     try:
         response = await gradient_client.chat.completions.create(
             model="openai-gpt-4o",
@@ -60,12 +68,12 @@ async def process_grammar_async(text: str, response_url: str):
                 {
                     "role": "system",
                     "content": (
-                    "You are a professional grammar assistant. "
-                    "Preserve the original tone and intent. "
-                    "Return only the corrected text."
-                    )
+                        "You are a professional grammar assistant. "
+                        "Fix grammar, spelling, and punctuation. "
+                        "Preserve the original tone and intent. "
+                        "Return only the corrected text."
+                    ),
                 },
-
                 {
                     "role": "user",
                     "content": text,
@@ -78,14 +86,16 @@ async def process_grammar_async(text: str, response_url: str):
     except Exception as e:
         corrected_text = f"❌ Error while processing grammar: {e}"
 
-    payload = payload = payload = {
-    "response_type": "ephemeral",
-    "text": corrected_text,
-}
+    payload = {
+        "response_type": "ephemeral",
+        "text": corrected_text,
+    }
 
     requests.post(response_url, json=payload)
 
-
+# --------------------
+# Slack slash command endpoint
+# --------------------
 @app.post("/slack/commands")
 async def slack_commands(request: Request):
     raw_body = await request.body()
@@ -103,16 +113,16 @@ async def slack_commands(request: Request):
     )
 
     form = await request.form()
-    text = form.get("text")
+    text = form.get("text", "")
     response_url = form.get("response_url")
 
-    # Background inference
+    # Fire background task (AI work happens async)
     asyncio.create_task(
         process_grammar_async(text, response_url)
     )
 
-    # Immediate ACK (< 3s)
+    # Immediate ACK (< 3 seconds)
     return {
         "response_type": "ephemeral",
         "text": "✍️"
-        }
+    }
