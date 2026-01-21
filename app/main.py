@@ -9,14 +9,13 @@ from fastapi import FastAPI, Request, HTTPException
 from dotenv import load_dotenv
 from gradient import AsyncGradient
 
-# Load env vars (local dev only; App Platform injects env vars automatically)
 load_dotenv()
 
 app = FastAPI()
 
-# --------------------
+
 # Secrets
-# --------------------
+
 SLACK_SIGNING_SECRET = os.getenv("SLACK_SIGNING_SECRET")
 GRADIENT_MODEL_ACCESS_KEY = os.getenv("GRADIENT_MODEL_ACCESS_KEY")
 
@@ -26,16 +25,15 @@ if not SLACK_SIGNING_SECRET:
 if not GRADIENT_MODEL_ACCESS_KEY:
     raise RuntimeError("GRADIENT_MODEL_ACCESS_KEY not set")
 
-# --------------------
-# Gradient async client (create once)
-# --------------------
+
+# Gradient async client
+
 gradient_client = AsyncGradient(
     model_access_key=GRADIENT_MODEL_ACCESS_KEY
 )
 
-# --------------------
 # Slack request verification
-# --------------------
+
 def verify_slack_request(*, raw_body: bytes, timestamp: str, slack_signature: str):
     now = int(time.time())
     req_ts = int(timestamp)
@@ -57,9 +55,8 @@ def verify_slack_request(*, raw_body: bytes, timestamp: str, slack_signature: st
     if not hmac.compare_digest(computed_signature, slack_signature):
         raise HTTPException(status_code=401, detail="Invalid signature")
 
-# --------------------
 # Background grammar processing
-# --------------------
+
 async def process_grammar_async(text: str, response_url: str):
     try:
         response = await gradient_client.chat.completions.create(
@@ -93,9 +90,8 @@ async def process_grammar_async(text: str, response_url: str):
 
     requests.post(response_url, json=payload)
 
-# --------------------
 # Slack slash command endpoint
-# --------------------
+
 @app.post("/slack/commands")
 async def slack_commands(request: Request):
     raw_body = await request.body()
