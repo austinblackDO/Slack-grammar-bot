@@ -117,5 +117,5 @@ async def slack_commands(request: Request):
     # Immediate ACK (< 3s)
     return {
         "response_type": "ephemeral",
-        "text": ":writing:"
+        "text": "✍️"
         }
