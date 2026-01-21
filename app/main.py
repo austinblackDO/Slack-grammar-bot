@@ -61,7 +61,7 @@ async def process_grammar_async(text: str, response_url: str):
                     "role": "system",
                     "content": (
                     "You are a professional grammar assistant. "
-                    "Preserve the original tone and intent."
+                    "Preserve the original tone and intent. "
                     "Return only the corrected text."
                     )
                 },
