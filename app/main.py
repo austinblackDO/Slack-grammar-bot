@@ -122,3 +122,48 @@ async def slack_commands(request: Request):
         "response_type": "ephemeral",
         "text": "✍️"
     }
+
+@app.post("/slack/interactions")
+async def slack_interactions(request: Request):
+    raw_body = await request.body()
+
+    verify_slack_request(
+        raw_body=raw_body,
+        timestamp=request.headers.get("X-Slack-Request-Timestamp"),
+        slack_signature=request.headers.get("X-Slack-Signature"),
+    )
+
+    payload = json.loads((await request.form()).get("payload"))
+
+    if payload.get("type") == "message_action":
+        trigger_id = payload["trigger_id"]
+
+        modal = {
+            "type": "modal",
+            "title": {"type": "plain_text", "text": "Test Modal"},
+            "close": {"type": "plain_text", "text": "Close"},
+            "blocks": [
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": "✅ Modal opened.\n\nThis confirms modal wiring works."
+                    }
+                }
+            ],
+        }
+
+        requests.post(
+            "https://slack.com/api/views.open",
+            headers={
+                "Authorization": f"Bearer {os.getenv('SLACK_BOT_TOKEN')}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "trigger_id": trigger_id,
+                "view": modal,
+            },
+        )
+
+        return {}
+
