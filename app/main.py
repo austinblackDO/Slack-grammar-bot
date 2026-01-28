@@ -51,11 +51,8 @@ async def rewrite_text(text: str, instructions: str = "") -> str:
         "- Improve clarity ONLY when grammar is incorrect or ambiguous.\n\n"
         "Hard rules (must follow):\n"
         "- Do NOT rewrite sentences for style.\n"
-        "- Do NOT add or remove information.\n"
         "- Do NOT change tone or intent.\n"
         "- Do NOT infer names or entities from misspellings.\n\n"
-        "Make the smallest possible changes needed to correct errors.\n"
-        "If a sentence is grammatically correct, leave it unchanged.\n"
         "Return ONLY the corrected text."
     )
 
