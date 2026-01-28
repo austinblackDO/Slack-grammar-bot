@@ -34,28 +34,33 @@ gradient_client = AsyncGradient(
 )
 
 #
-async def rewrite_text(text: str) -> str:
+async def rewrite_text(text: str, instructions: str = "") -> str:
+    system_prompt = (
+        "You are a strict grammar correction assistant.\n\n"
+        "Your task:\n"
+        "- Fix grammar, spelling, punctuation, and sentence boundaries.\n"
+        "- Improve clarity ONLY when grammar is incorrect or ambiguous.\n\n"
+        "Hard rules (must follow):\n"
+        "- Do NOT rewrite sentences for style.\n"
+        "- Do NOT add or remove information.\n"
+        "- Do NOT change intent.\n"
+        "- Do NOT infer names or entities from misspellings.\n\n"
+    )
+
+    if instructions:
+        system_prompt += f"\nAdditional user instructions:\n{instructions}\n"
+
     response = await gradient_client.chat.completions.create(
         model="openai-gpt-4o",
+        temperature=0.0,
         messages=[
-            {
-                "role": "system",
-                "content": (
-                    "You are a professional grammar assistant. "
-                    "Fix grammar, spelling, and punctuation. "
-                    "Preserve the original tone and intent. "
-                    "Do not rewrite unnecessarily. "
-                    "Return only the corrected text."
-                ),
-            },
-            {
-                "role": "user",
-                "content": text,
-            },
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": text},
         ],
     )
 
     return response.choices[0].message.content.strip()
+
 
 
 # Slack request verification
@@ -135,10 +140,25 @@ async def slack_commands(request: Request):
     )
 
     form = await request.form()
-    text = form.get("text", "")
-    response_url = form.get("response_url")
+    
+    raw_input = form.get("text", "").strip()
+    if ":" in raw_input:
+        instructions, user_text = raw_input.split(":", 1)
+        instructions = instructions.strip()
+        user_text = user_text.strip()
+    else:
+        instructions = ""
+        user_text = raw_input
+        response_url = form.get("response_url")
+    
+    corrected_text = await rewrite_text(
+    text=user_text,
+    instructions=instructions
+    )
 
+    
     # Fire background task (AI work happens async)
+    
     asyncio.create_task(
         process_grammar_async(text, response_url)
     )
@@ -149,7 +169,6 @@ async def slack_commands(request: Request):
         "text": "✍️"
     }
 
-import json
 
 @app.post("/slack/interactions")
 async def slack_interactions(request: Request):
