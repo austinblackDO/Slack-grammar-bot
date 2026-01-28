@@ -124,6 +124,8 @@ async def slack_commands(request: Request):
         "text": "✍️"
     }
 
+import json
+
 @app.post("/slack/interactions")
 async def slack_interactions(request: Request):
     raw_body = await request.body()
@@ -136,22 +138,34 @@ async def slack_interactions(request: Request):
 
     payload = json.loads((await request.form()).get("payload"))
 
-    if payload.get("type") == "message_action":
+    # Message shortcut
+    if payload.get("type") == "message_action" and payload.get("callback_id") == "rephrase_message":
         trigger_id = payload["trigger_id"]
+        original_text = payload["message"]["text"]
+
+        # AI call (you already have this function)
+        rewritten_text = await rewrite_text(original_text)
 
         modal = {
             "type": "modal",
-            "title": {"type": "plain_text", "text": "Test Modal"},
+            "title": {"type": "plain_text", "text": "Rephrase with AI"},
             "close": {"type": "plain_text", "text": "Close"},
             "blocks": [
                 {
                     "type": "section",
                     "text": {
                         "type": "mrkdwn",
-                        "text": "✅ Modal opened.\n\nThis confirms modal wiring works."
+                        "text": "*AI-corrected version:*"
+                    }
+                },
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": rewritten_text
                     }
                 }
-            ],
+            ]
         }
 
         requests.post(
@@ -167,4 +181,3 @@ async def slack_interactions(request: Request):
         )
 
         return {}
-
