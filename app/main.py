@@ -33,6 +33,31 @@ gradient_client = AsyncGradient(
     model_access_key=GRADIENT_MODEL_ACCESS_KEY
 )
 
+#
+async def rewrite_text(text: str) -> str:
+    response = await gradient_client.chat.completions.create(
+        model="openai-gpt-4o",
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "You are a professional grammar assistant. "
+                    "Fix grammar, spelling, and punctuation. "
+                    "Preserve the original tone and intent. "
+                    "Do not rewrite unnecessarily. "
+                    "Return only the corrected text."
+                ),
+            },
+            {
+                "role": "user",
+                "content": text,
+            },
+        ],
+    )
+
+    return response.choices[0].message.content.strip()
+
+
 # Slack request verification
 
 def verify_slack_request(*, raw_body: bytes, timestamp: str, slack_signature: str):
