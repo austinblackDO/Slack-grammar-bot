@@ -14,26 +14,35 @@ load_dotenv()
 
 app = FastAPI()
 
-
-# Secrets
+# =====================
+# Environment variables
+# =====================
 
 SLACK_SIGNING_SECRET = os.getenv("SLACK_SIGNING_SECRET")
+SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN")
 GRADIENT_MODEL_ACCESS_KEY = os.getenv("GRADIENT_MODEL_ACCESS_KEY")
 
 if not SLACK_SIGNING_SECRET:
     raise RuntimeError("SLACK_SIGNING_SECRET not set")
 
+if not SLACK_BOT_TOKEN:
+    raise RuntimeError("SLACK_BOT_TOKEN not set")
+
 if not GRADIENT_MODEL_ACCESS_KEY:
     raise RuntimeError("GRADIENT_MODEL_ACCESS_KEY not set")
 
-
-# Gradient async client
+# =====================
+# Gradient client
+# =====================
 
 gradient_client = AsyncGradient(
     model_access_key=GRADIENT_MODEL_ACCESS_KEY
 )
 
-#
+# =====================
+# LLM helper (ONLY place that calls the model)
+# =====================
+
 async def rewrite_text(text: str, instructions: str = "") -> str:
     system_prompt = (
         "You are a strict grammar correction assistant.\n\n"
@@ -43,12 +52,15 @@ async def rewrite_text(text: str, instructions: str = "") -> str:
         "Hard rules (must follow):\n"
         "- Do NOT rewrite sentences for style.\n"
         "- Do NOT add or remove information.\n"
-        "- Do NOT change intent.\n"
+        "- Do NOT change tone or intent.\n"
         "- Do NOT infer names or entities from misspellings.\n\n"
+        "Make the smallest possible changes needed to correct errors.\n"
+        "If a sentence is grammatically correct, leave it unchanged.\n"
+        "Return ONLY the corrected text."
     )
 
     if instructions:
-        system_prompt += f"\nAdditional user instructions:\n{instructions}\n"
+        system_prompt += f"\n\nAdditional user instructions:\n{instructions}"
 
     response = await gradient_client.chat.completions.create(
         model="openai-gpt-4o",
@@ -61,15 +73,14 @@ async def rewrite_text(text: str, instructions: str = "") -> str:
 
     return response.choices[0].message.content.strip()
 
-
-
-# Slack request verification
+# =====================
+# Slack signature verification
+# =====================
 
 def verify_slack_request(*, raw_body: bytes, timestamp: str, slack_signature: str):
     now = int(time.time())
     req_ts = int(timestamp)
 
-    # Prevent replay attacks (5 min window)
     if abs(now - req_ts) > 60 * 5:
         raise HTTPException(status_code=401, detail="Stale request")
 
@@ -86,31 +97,13 @@ def verify_slack_request(*, raw_body: bytes, timestamp: str, slack_signature: st
     if not hmac.compare_digest(computed_signature, slack_signature):
         raise HTTPException(status_code=401, detail="Invalid signature")
 
+# =====================
 # Background grammar processing
+# =====================
 
-async def process_grammar_async(text: str, response_url: str):
+async def process_grammar_async(text: str, response_url: str, instructions: str):
     try:
-        response = await gradient_client.chat.completions.create(
-            model="openai-gpt-4o",
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "You are a professional grammar assistant. "
-                        "Fix grammar, spelling, and punctuation. "
-                        "Preserve the original tone and intent. "
-                        "Return only the corrected text."
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": text,
-                },
-            ],
-        )
-
-        corrected_text = response.choices[0].message.content.strip()
-
+        corrected_text = await rewrite_text(text, instructions)
     except Exception as e:
         corrected_text = f"❌ Error while processing grammar: {e}"
 
@@ -121,7 +114,9 @@ async def process_grammar_async(text: str, response_url: str):
 
     requests.post(response_url, json=payload)
 
-# Slack slash command endpoint
+# =====================
+# Slash command: /grammar
+# =====================
 
 @app.post("/slack/commands")
 async def slack_commands(request: Request):
@@ -140,8 +135,10 @@ async def slack_commands(request: Request):
     )
 
     form = await request.form()
-    
+    response_url = form.get("response_url")
+
     raw_input = form.get("text", "").strip()
+
     if ":" in raw_input:
         instructions, user_text = raw_input.split(":", 1)
         instructions = instructions.strip()
@@ -149,26 +146,19 @@ async def slack_commands(request: Request):
     else:
         instructions = ""
         user_text = raw_input
-        response_url = form.get("response_url")
-    
-    corrected_text = await rewrite_text(
-    text=user_text,
-    instructions=instructions
-    )
 
-    
-    # Fire background task (AI work happens async)
-    
     asyncio.create_task(
-        process_grammar_async(text, response_url)
+        process_grammar_async(user_text, response_url, instructions)
     )
 
-    # Immediate ACK (< 3 seconds)
     return {
         "response_type": "ephemeral",
-        "text": "✍️"
+        "text": "✍️ Fixing grammar…"
     }
 
+# =====================
+# Message shortcut → Modal (optional UX)
+# =====================
 
 @app.post("/slack/interactions")
 async def slack_interactions(request: Request):
@@ -182,12 +172,10 @@ async def slack_interactions(request: Request):
 
     payload = json.loads((await request.form()).get("payload"))
 
-    # Message shortcut
     if payload.get("type") == "message_action" and payload.get("callback_id") == "rephrase_message":
         trigger_id = payload["trigger_id"]
         original_text = payload["message"]["text"]
 
-        # AI call (you already have this function)
         rewritten_text = await rewrite_text(original_text)
 
         modal = {
@@ -215,7 +203,7 @@ async def slack_interactions(request: Request):
         requests.post(
             "https://slack.com/api/views.open",
             headers={
-                "Authorization": f"Bearer {os.getenv('SLACK_BOT_TOKEN')}",
+                "Authorization": f"Bearer {SLACK_BOT_TOKEN}",
                 "Content-Type": "application/json",
             },
             json={
@@ -224,4 +212,4 @@ async def slack_interactions(request: Request):
             },
         )
 
-        return {}
+    return {}
