@@ -4,7 +4,6 @@ import hmac
 import hashlib
 import asyncio
 import requests
-import json
 
 from fastapi import FastAPI, Request, HTTPException
 from dotenv import load_dotenv
@@ -19,14 +18,10 @@ app = FastAPI()
 # =====================
 
 SLACK_SIGNING_SECRET = os.getenv("SLACK_SIGNING_SECRET")
-SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN")
 GRADIENT_MODEL_ACCESS_KEY = os.getenv("GRADIENT_MODEL_ACCESS_KEY")
 
 if not SLACK_SIGNING_SECRET:
     raise RuntimeError("SLACK_SIGNING_SECRET not set")
-
-if not SLACK_BOT_TOKEN:
-    raise RuntimeError("SLACK_BOT_TOKEN not set")
 
 if not GRADIENT_MODEL_ACCESS_KEY:
     raise RuntimeError("GRADIENT_MODEL_ACCESS_KEY not set")
@@ -40,24 +35,23 @@ gradient_client = AsyncGradient(
 )
 
 # =====================
-# LLM helper (ONLY place that calls the model)
+# Grammar correction helper
 # =====================
 
-async def rewrite_text(text: str, instructions: str = "") -> str:
+async def correct_grammar(text: str) -> str:
     system_prompt = (
         "You are a strict grammar correction assistant.\n\n"
         "Your task:\n"
-        "- Fix grammar, spelling, punctuation, and sentence boundaries.\n"
-        "- Improve clarity ONLY when grammar is incorrect or ambiguous.\n\n"
-        "Hard rules (must follow):\n"
+        "- Fix spelling, grammar, punctuation, and sentence boundaries.\n"
+        "- Understand the user's intent only to preserve meaning and tone.\n\n"
+        "Hard rules:\n"
         "- Do NOT rewrite sentences for style.\n"
+        "- Do NOT add, remove, or infer information.\n"
         "- Do NOT change tone or intent.\n"
-        "- Do NOT infer names or entities from misspellings.\n\n"
+        "- Do NOT answer questions or explain anything.\n\n"
+        "If the text is already grammatically correct, return it unchanged.\n"
         "Return ONLY the corrected text."
     )
-
-    if instructions:
-        system_prompt += f"\n\nAdditional user instructions:\n{instructions}"
 
     response = await gradient_client.chat.completions.create(
         model="openai-gpt-4o",
@@ -71,13 +65,14 @@ async def rewrite_text(text: str, instructions: str = "") -> str:
     return response.choices[0].message.content.strip()
 
 # =====================
-# Slack signature verification
+# Slack request verification
 # =====================
 
 def verify_slack_request(*, raw_body: bytes, timestamp: str, slack_signature: str):
     now = int(time.time())
     req_ts = int(timestamp)
 
+    # Prevent replay attacks (5 min window)
     if abs(now - req_ts) > 60 * 5:
         raise HTTPException(status_code=401, detail="Stale request")
 
@@ -95,21 +90,22 @@ def verify_slack_request(*, raw_body: bytes, timestamp: str, slack_signature: st
         raise HTTPException(status_code=401, detail="Invalid signature")
 
 # =====================
-# Background grammar processing
+# Background processing
 # =====================
 
-async def process_grammar_async(text: str, response_url: str, instructions: str):
+async def process_grammar_async(text: str, response_url: str):
     try:
-        corrected_text = await rewrite_text(text, instructions)
+        corrected_text = await correct_grammar(text)
     except Exception as e:
         corrected_text = f"❌ Error while processing grammar: {e}"
 
-    payload = {
-        "response_type": "ephemeral",
-        "text": corrected_text,
-    }
-
-    requests.post(response_url, json=payload)
+    requests.post(
+        response_url,
+        json={
+            "response_type": "ephemeral",
+            "text": corrected_text,
+        },
+    )
 
 # =====================
 # Slash command: /grammar
@@ -132,81 +128,22 @@ async def slack_commands(request: Request):
     )
 
     form = await request.form()
+    user_text = form.get("text", "").strip()
     response_url = form.get("response_url")
 
-    raw_input = form.get("text", "").strip()
-
-    if ":" in raw_input:
-        instructions, user_text = raw_input.split(":", 1)
-        instructions = instructions.strip()
-        user_text = user_text.strip()
-    else:
-        instructions = ""
-        user_text = raw_input
-
-    asyncio.create_task(
-        process_grammar_async(user_text, response_url, instructions)
-    )
-
-    return {
-        "response_type": "ephemeral",
-        "text": "✍️ Fixing grammar…"
-    }
-
-# =====================
-# Message shortcut → Modal (optional UX)
-# =====================
-
-@app.post("/slack/interactions")
-async def slack_interactions(request: Request):
-    raw_body = await request.body()
-
-    verify_slack_request(
-        raw_body=raw_body,
-        timestamp=request.headers.get("X-Slack-Request-Timestamp"),
-        slack_signature=request.headers.get("X-Slack-Signature"),
-    )
-
-    payload = json.loads((await request.form()).get("payload"))
-
-    if payload.get("type") == "message_action" and payload.get("callback_id") == "rephrase_message":
-        trigger_id = payload["trigger_id"]
-        original_text = payload["message"]["text"]
-
-        rewritten_text = await rewrite_text(original_text)
-
-        modal = {
-            "type": "modal",
-            "title": {"type": "plain_text", "text": "Rephrase with AI"},
-            "close": {"type": "plain_text", "text": "Close"},
-            "blocks": [
-                {
-                    "type": "section",
-                    "text": {
-                        "type": "mrkdwn",
-                        "text": "*AI-corrected version:*"
-                    }
-                },
-                {
-                    "type": "section",
-                    "text": {
-                        "type": "mrkdwn",
-                        "text": rewritten_text
-                    }
-                }
-            ]
+    if not user_text:
+        return {
+            "response_type": "ephemeral",
+            "text": "⚠️ Please provide text to check grammar.",
         }
 
-        requests.post(
-            "https://slack.com/api/views.open",
-            headers={
-                "Authorization": f"Bearer {SLACK_BOT_TOKEN}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "trigger_id": trigger_id,
-                "view": modal,
-            },
-        )
+    # Run grammar correction asynchronously
+    asyncio.create_task(
+        process_grammar_async(user_text, response_url)
+    )
 
-    return {}
+    # Immediate ACK (< 3 seconds)
+    return {
+        "response_type": "ephemeral",
+        "text": "... ✍️"
+    }
