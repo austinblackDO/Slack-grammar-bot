@@ -1,0 +1,30 @@
+name: slackbot-inference-hub
+region: nyc
+services:
+  - name: slackbot-api
+    environment_slug: python
+    instance_count: 1
+    instance_size_slug: basic-xxs
+    http_port: 8080
+    run_command: uvicorn app.main:app --host 0.0.0.0 --port 8080
+    source_dir: /
+    github:
+      repo: REPLACE_WITH_YOUR_GITHUB_REPO
+      branch: cursor/slackbot-inference-hub-setup-51e2
+      deploy_on_push: true
+    envs:
+      - key: SLACK_SIGNING_SECRET
+        scope: RUN_TIME
+        type: SECRET
+      - key: INFERENCE_HUB_MODEL_ACCESS_KEY
+        scope: RUN_TIME
+        type: SECRET
+      - key: INFERENCE_HUB_DEFAULT_AGENT
+        scope: RUN_TIME
+        type: SECRET
+      - key: INFERENCE_HUB_BASE_URL
+        scope: RUN_TIME
+        value: https://inference.do-ai.run/v1
+      - key: INFERENCE_HUB_SYSTEM_PROMPT
+        scope: RUN_TIME
+        value: You are a helpful assistant for a Slack workspace. Keep responses concise and actionable.

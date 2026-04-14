@@ -1,139 +1,161 @@
+import hashlib
+import hmac
 import os
 import time
-import hmac
-import hashlib
-import asyncio
-import requests
 
-from fastapi import FastAPI, Request, HTTPException
+import httpx
 from dotenv import load_dotenv
-from gradient import AsyncGradient
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 
 load_dotenv()
 
-app = FastAPI()
+app = FastAPI(title="Slackbot + DigitalOcean Inference Hub")
 
 # =====================
 # Environment variables
 # =====================
 
 SLACK_SIGNING_SECRET = os.getenv("SLACK_SIGNING_SECRET")
-GRADIENT_MODEL_ACCESS_KEY = os.getenv("GRADIENT_MODEL_ACCESS_KEY")
+INFERENCE_HUB_MODEL_ACCESS_KEY = os.getenv(
+    "INFERENCE_HUB_MODEL_ACCESS_KEY", os.getenv("MODEL_ACCESS_KEY")
+)
+INFERENCE_HUB_BASE_URL = os.getenv("INFERENCE_HUB_BASE_URL", "https://inference.do-ai.run/v1")
+INFERENCE_HUB_DEFAULT_AGENT = os.getenv("INFERENCE_HUB_DEFAULT_AGENT")
+INFERENCE_HUB_SYSTEM_PROMPT = os.getenv(
+    "INFERENCE_HUB_SYSTEM_PROMPT",
+    "You are a helpful assistant for a Slack workspace. Keep responses concise and actionable.",
+)
 
 if not SLACK_SIGNING_SECRET:
     raise RuntimeError("SLACK_SIGNING_SECRET not set")
 
-if not GRADIENT_MODEL_ACCESS_KEY:
-    raise RuntimeError("GRADIENT_MODEL_ACCESS_KEY not set")
+if not INFERENCE_HUB_MODEL_ACCESS_KEY:
+    raise RuntimeError("INFERENCE_HUB_MODEL_ACCESS_KEY (or MODEL_ACCESS_KEY) not set")
 
-# =====================
-# Gradient client
-# =====================
+if not INFERENCE_HUB_DEFAULT_AGENT:
+    raise RuntimeError("INFERENCE_HUB_DEFAULT_AGENT not set")
 
-gradient_client = AsyncGradient(
-    model_access_key=GRADIENT_MODEL_ACCESS_KEY
-)
 
-# =====================
-# Grammar correction helper
-# =====================
+def verify_slack_request(*, raw_body: bytes, timestamp: str, slack_signature: str) -> None:
+    try:
+        req_ts = int(timestamp)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid request timestamp") from exc
 
-async def correct_grammar(text: str) -> str:
-    system_prompt = (
-    "You are a professional grammar correction assistant.\n\n"
-    "Your responsibility is to correct grammar, spelling, punctuation, "
-    "sentence boundaries, and basic structural formatting while preserving "
-    "the user’s original wording, tone, and intent.\n\n"
-    "What you should fix:\n"
-    "- Typos, misspellings, and spacing errors\n"
-    "- Verb tense, subject–verb agreement, and articles\n"
-    "- Punctuation and capitalization\n"
-    "- Sentence boundaries\n"
-    "- Paragraph breaks when they are grammatically implied\n"
-    "- Greeting placement (e.g., moving “Hello team,” to its own line)\n"
-    "- Simple list formatting (numbers or bullets) when the list already exists in the text\n\n"
-    "Intent handling:\n"
-    "- Understand the user’s intent only to preserve meaning and tone\n"
-    "- Do NOT make the text more polite, formal, or casual unless grammar requires it\n"
-    "- Do NOT rewrite sentences for style or clarity beyond grammar\n"
-    "- Do NOT change phrasing unless the original phrasing is grammatically incorrect\n\n"
-    "Strict rules:\n"
-    "- Do NOT add new information\n"
-    "- Do NOT remove information\n"
-    "- Do NOT infer names, entities, or context from misspellings\n"
-    "- Do NOT invent lists, headings, or paragraphs\n"
-    "- Do NOT answer questions or explain anything\n"
-    "- Do NOT provide multiple versions or suggestions\n\n"
-    "If the text is already grammatically correct and well-structured, "
-    "return it unchanged.\n\n"
-    "Return ONLY the corrected text."
-)
-
-    response = await gradient_client.chat.completions.create(
-        model="openai-gpt-4o",
-        temperature=0.0,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": text},
-        ],
-    )
-
-    return response.choices[0].message.content.strip()
-
-# =====================
-# Slack request verification
-# =====================
-
-def verify_slack_request(*, raw_body: bytes, timestamp: str, slack_signature: str):
     now = int(time.time())
-    req_ts = int(timestamp)
 
-    # Prevent replay attacks (5 min window)
+    # Prevent replay attacks (5-minute window)
     if abs(now - req_ts) > 60 * 5:
         raise HTTPException(status_code=401, detail="Stale request")
 
     sig_basestring = b"v0:" + timestamp.encode() + b":" + raw_body
-    computed_signature = (
-        "v0="
-        + hmac.new(
-            SLACK_SIGNING_SECRET.encode(),
-            sig_basestring,
-            hashlib.sha256,
-        ).hexdigest()
-    )
+    computed_signature = "v0=" + hmac.new(
+        SLACK_SIGNING_SECRET.encode(),
+        sig_basestring,
+        hashlib.sha256,
+    ).hexdigest()
 
     if not hmac.compare_digest(computed_signature, slack_signature):
         raise HTTPException(status_code=401, detail="Invalid signature")
 
-# =====================
-# Background processing
-# =====================
 
-async def process_grammar_async(text: str, response_url: str):
+def parse_agent_and_prompt(raw_text: str) -> tuple[str, str]:
+    """
+    Allows optional override syntax:
+    /agent <agent-id>::<prompt text>
+    """
+    text = raw_text.strip()
+    if "::" not in text:
+        return INFERENCE_HUB_DEFAULT_AGENT, text
+
+    maybe_agent, maybe_prompt = text.split("::", 1)
+    agent = maybe_agent.strip() or INFERENCE_HUB_DEFAULT_AGENT
+    prompt = maybe_prompt.strip()
+    return agent, prompt
+
+
+def normalize_model_output(content: object) -> str:
+    if isinstance(content, str):
+        return content.strip()
+
+    if isinstance(content, list):
+        chunks: list[str] = []
+        for item in content:
+            if isinstance(item, dict) and item.get("type") == "text":
+                chunks.append(str(item.get("text", "")))
+        return "".join(chunks).strip()
+
+    return str(content).strip()
+
+
+async def query_inference_hub(*, agent: str, prompt: str) -> str:
+    url = f"{INFERENCE_HUB_BASE_URL.rstrip('/')}/chat/completions"
+    payload = {
+        "model": agent,
+        "temperature": 0.2,
+        "messages": [
+            {"role": "system", "content": INFERENCE_HUB_SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
+        ],
+    }
+    headers = {
+        "Authorization": f"Bearer {INFERENCE_HUB_MODEL_ACCESS_KEY}",
+        "Content-Type": "application/json",
+    }
+
+    async with httpx.AsyncClient(timeout=60) as client:
+        response = await client.post(url, json=payload, headers=headers)
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            detail = exc.response.text[:600]
+            raise RuntimeError(f"Inference Hub request failed: {detail}") from exc
+
+    data = response.json()
+    choices = data.get("choices") or []
+    if not choices:
+        raise RuntimeError("Inference Hub returned no choices")
+
+    message = choices[0].get("message", {})
+    content = message.get("content", "")
+    return normalize_model_output(content)
+
+
+async def send_slack_response(response_url: str, text: str) -> None:
+    async with httpx.AsyncClient(timeout=20) as client:
+        await client.post(
+            response_url,
+            json={
+                "response_type": "ephemeral",
+                "text": text,
+            },
+        )
+
+
+async def process_agent_request_async(raw_text: str, response_url: str) -> None:
     try:
-        corrected_text = await correct_grammar(text)
-    except Exception as e:
-        corrected_text = f"❌ Error while processing grammar: {e}"
+        agent, prompt = parse_agent_and_prompt(raw_text)
+        if not prompt:
+            output = "⚠️ Prompt is empty. Usage: `/agent your question` or `/agent agent-id::your question`."
+        else:
+            output = await query_inference_hub(agent=agent, prompt=prompt)
+    except Exception as exc:  # noqa: BLE001 - user-facing error path
+        output = f"❌ Error while contacting Inference Hub: {exc}"
 
-    requests.post(
-        response_url,
-        json={
-            "response_type": "ephemeral",
-            "text": corrected_text,
-        },
-    )
+    await send_slack_response(response_url, output)
 
-# =====================
-# Slash command: /grammar
-# =====================
+
+@app.get("/healthz")
+async def healthcheck() -> dict[str, bool]:
+    return {"ok": True}
+
 
 @app.post("/slack/commands")
-async def slack_commands(request: Request):
+async def slack_commands(request: Request, background_tasks: BackgroundTasks) -> dict[str, str]:
     raw_body = await request.body()
 
     timestamp = request.headers.get("X-Slack-Request-Timestamp")
     slack_signature = request.headers.get("X-Slack-Signature")
-
     if not timestamp or not slack_signature:
         raise HTTPException(status_code=400, detail="Missing Slack headers")
 
@@ -144,22 +166,22 @@ async def slack_commands(request: Request):
     )
 
     form = await request.form()
-    user_text = form.get("text", "").strip()
-    response_url = form.get("response_url")
+    user_text = str(form.get("text", "")).strip()
+    response_url = str(form.get("response_url", "")).strip()
+
+    if not response_url:
+        raise HTTPException(status_code=400, detail="Missing response_url in Slack payload")
 
     if not user_text:
         return {
             "response_type": "ephemeral",
-            "text": "⚠️ Please provide text to check grammar.",
+            "text": "⚠️ Usage: `/agent your question` (or `/agent agent-id::your question` to target a specific agent).",
         }
 
-    # Run grammar correction asynchronously
-    asyncio.create_task(
-        process_grammar_async(user_text, response_url)
-    )
+    background_tasks.add_task(process_agent_request_async, user_text, response_url)
 
-    # Immediate ACK (< 3 seconds)
+    # Immediate acknowledgement (< 3 seconds) while the real response is processed.
     return {
         "response_type": "ephemeral",
-        "text": "... ✍️"
+        "text": "🤖 Thinking...",
     }
