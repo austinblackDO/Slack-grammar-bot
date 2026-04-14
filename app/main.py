@@ -25,6 +25,7 @@ INFERENCE_HUB_SYSTEM_PROMPT = os.getenv(
     "INFERENCE_HUB_SYSTEM_PROMPT",
     "You are a helpful assistant for a Slack workspace. Keep responses concise and actionable.",
 )
+SLACK_COMMAND_NAME = os.getenv("SLACK_COMMAND_NAME", "/grammar")
 
 if not SLACK_SIGNING_SECRET:
     raise RuntimeError("SLACK_SIGNING_SECRET not set")
@@ -62,7 +63,7 @@ def verify_slack_request(*, raw_body: bytes, timestamp: str, slack_signature: st
 def parse_agent_and_prompt(raw_text: str) -> tuple[str, str]:
     """
     Allows optional override syntax:
-    /agent <agent-id>::<prompt text>
+    /grammar <agent-id>::<prompt text>
     """
     text = raw_text.strip()
     if "::" not in text:
@@ -136,7 +137,11 @@ async def process_agent_request_async(raw_text: str, response_url: str) -> None:
     try:
         agent, prompt = parse_agent_and_prompt(raw_text)
         if not prompt:
-            output = "⚠️ Prompt is empty. Usage: `/agent your question` or `/agent agent-id::your question`."
+            output = (
+                f"⚠️ Prompt is empty. Usage: "
+                f"`{SLACK_COMMAND_NAME} your question` or "
+                f"`{SLACK_COMMAND_NAME} agent-id::your question`."
+            )
         else:
             output = await query_inference_hub(agent=agent, prompt=prompt)
     except Exception as exc:  # noqa: BLE001 - user-facing error path
@@ -175,7 +180,11 @@ async def slack_commands(request: Request, background_tasks: BackgroundTasks) ->
     if not user_text:
         return {
             "response_type": "ephemeral",
-            "text": "⚠️ Usage: `/agent your question` (or `/agent agent-id::your question` to target a specific agent).",
+            "text": (
+                f"⚠️ Usage: `{SLACK_COMMAND_NAME} your question` "
+                f"(or `{SLACK_COMMAND_NAME} agent-id::your question` "
+                "to target a specific agent)."
+            ),
         }
 
     background_tasks.add_task(process_agent_request_async, user_text, response_url)

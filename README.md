@@ -9,12 +9,12 @@ FastAPI Slack slash-command bot that routes prompts to DigitalOcean Inference Hu
 - Sends prompt to DigitalOcean Inference Hub (`/v1/chat/completions`)
 - Replies asynchronously to Slack via `response_url`
 - Supports optional per-request agent override:
-  - `/agent your question`
-  - `/agent agent-id::your question`
+  - `/grammar your question`
+  - `/grammar agent-id::your question`
 
 ## 1) Prerequisites
 
-- Slack app with a slash command (example: `/agent`)
+- Slack app with a slash command (example: `/grammar`)
 - DigitalOcean Inference Hub model access key
 - A model/agent ID available in your Inference Hub account
 - Python 3.10+
@@ -63,7 +63,7 @@ Expected:
 
 In your Slack app:
 
-1. Create slash command `/agent`
+1. Create slash command `/grammar`
 2. Request URL:
    - local dev via tunnel: `https://<your-ngrok-domain>/slack/commands`
    - production: `https://<your-app-domain>/slack/commands`
@@ -73,8 +73,8 @@ In your Slack app:
 
 Slash command examples:
 
-- `/agent summarize this incident report`
-- `/agent anthropic/claude-3-5-sonnet::draft a release note from this text`
+- `/grammar summarize this incident report`
+- `/grammar anthropic/claude-3-5-sonnet::draft a release note from this text`
 
 ## 5) Deploy on DigitalOcean App Platform
 
@@ -107,7 +107,7 @@ Once deployed, copy your app URL into the Slack slash command Request URL and re
 
 ## 6) Verify end-to-end
 
-1. Run `/agent hello` in Slack
+1. Run `/grammar hello` in Slack
 2. Confirm immediate ephemeral ack (`🤖 Thinking...`)
 3. Confirm follow-up response from Inference Hub
 4. Check App Platform logs if failures occur
