@@ -1,0 +1,59 @@
+{
+  "$schema": "https://docc-schema.internal.digitalocean.com/manifest.json",
+  "service_id": "6f8c9a1b-2d3e-4f50-a678-9bc0def12a34",
+  "application": {
+    "name": "slack-grammar-bot",
+    "namespace": "dogfish",
+    "scale": 1,
+    "auto_tls": true,
+    "tls_domains": ["slack-grammar-bot.dogfish.internal.digitalocean.com"],
+    "deployment_strategy": {
+      "canary": {
+        "increment": 50,
+        "interval": 120
+      },
+      "proxy_ports": [
+        {
+          "port": 8080,
+          "protocol": "http"
+        }
+      ]
+    },
+    "containers": {
+      "app": {
+        "image": "docker.internal.digitalocean.com/dogfish/slack-grammar-bot:manual",
+        "ports": [8080],
+        "env": {
+          "PORT": "8080"
+        },
+        "secrets": [
+          {
+            "type": "env",
+            "path": "secret-versioned/data/dogfish/slack-grammar-bot/puff",
+            "key": "SLACK_SIGNING_SECRET"
+          },
+          {
+            "type": "env",
+            "path": "secret-versioned/data/dogfish/slack-grammar-bot/puff",
+            "key": "INFERENCE_HUB_MODEL_ACCESS_KEY"
+          },
+          {
+            "type": "env",
+            "path": "secret-versioned/data/dogfish/slack-grammar-bot/puff",
+            "key": "INFERENCE_HUB_DEFAULT_AGENT"
+          }
+        ],
+        "check": {
+          "ready": {
+            "path": "/healthz",
+            "port": 8080
+          }
+        }
+      }
+    }
+  },
+  "maintainer": "ablack@digitalocean.com",
+  "mtls_acl": {
+    "*.staff.digitalocean.com": ["read", "delete", "restart", "write"]
+  }
+}

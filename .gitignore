@@ -1,3 +1,6 @@
+# Local mirror of internal doc sites (do not commit)
+internal-docs/
+
 .venv/
 venv/
 __pycache__/
@@ -5,3 +8,6 @@ __pycache__/
 .env
 .env.*
 !.env.example
+
+# Local Vault payload for `vault kv put @...` (see docc/vault-puff-secrets.example.json)
+docc/vault-puff-secrets.json

@@ -26,15 +26,30 @@ INFERENCE_HUB_SYSTEM_PROMPT = os.getenv(
     "You are a helpful assistant for a Slack workspace. Keep responses concise and actionable.",
 )
 SLACK_COMMAND_NAME = os.getenv("SLACK_COMMAND_NAME", "/grammar")
+# Delayed response only: "ephemeral" (default) or "in_channel" (visible in channel history for all).
+_slack_vis = os.getenv("SLACK_REPLY_VISIBILITY", "ephemeral").strip().lower()
+SLACK_REPLY_VISIBILITY = _slack_vis if _slack_vis in ("ephemeral", "in_channel") else "ephemeral"
 
-if not SLACK_SIGNING_SECRET:
-    raise RuntimeError("SLACK_SIGNING_SECRET not set")
+def _runtime_config_errors() -> list[str]:
+    """Collect missing config so the process can start (e.g. DOCC readiness) before Vault sync."""
+    errors: list[str] = []
+    if not SLACK_SIGNING_SECRET:
+        errors.append("SLACK_SIGNING_SECRET not set")
+    if not INFERENCE_HUB_MODEL_ACCESS_KEY:
+        errors.append("INFERENCE_HUB_MODEL_ACCESS_KEY (or MODEL_ACCESS_KEY) not set")
+    if not INFERENCE_HUB_DEFAULT_AGENT:
+        errors.append("INFERENCE_HUB_DEFAULT_AGENT not set")
+    return errors
 
-if not INFERENCE_HUB_MODEL_ACCESS_KEY:
-    raise RuntimeError("INFERENCE_HUB_MODEL_ACCESS_KEY (or MODEL_ACCESS_KEY) not set")
 
-if not INFERENCE_HUB_DEFAULT_AGENT:
-    raise RuntimeError("INFERENCE_HUB_DEFAULT_AGENT not set")
+def require_slack_runtime_config() -> None:
+    """Fail Slack routes until required env is present (secrets may arrive after first deploy)."""
+    missing = _runtime_config_errors()
+    if missing:
+        raise HTTPException(
+            status_code=503,
+            detail="Service misconfigured: " + "; ".join(missing),
+        )
 
 
 def verify_slack_request(*, raw_body: bytes, timestamp: str, slack_signature: str) -> None:
@@ -89,16 +104,23 @@ def normalize_model_output(content: object) -> str:
     return str(content).strip()
 
 
+def _is_genai_agent_deployment(base_url: str) -> bool:
+    """GenAI Agent deployments use /api/v1/chat/completions and omit top-level model."""
+    return "agents.do-ai.run" in base_url
+
+
 async def query_inference_hub(*, agent: str, prompt: str) -> str:
     url = f"{INFERENCE_HUB_BASE_URL.rstrip('/')}/chat/completions"
-    payload = {
-        "model": agent,
+    payload: dict[str, object] = {
         "temperature": 0.2,
         "messages": [
             {"role": "system", "content": INFERENCE_HUB_SYSTEM_PROMPT},
             {"role": "user", "content": prompt},
         ],
     }
+    # Serverless Inference Hub uses OpenAI-style "model"; hosted agents are fixed per URL.
+    if not _is_genai_agent_deployment(INFERENCE_HUB_BASE_URL):
+        payload["model"] = agent
     headers = {
         "Authorization": f"Bearer {INFERENCE_HUB_MODEL_ACCESS_KEY}",
         "Content-Type": "application/json",
@@ -119,16 +141,34 @@ async def query_inference_hub(*, agent: str, prompt: str) -> str:
 
     message = choices[0].get("message", {})
     content = message.get("content", "")
+    if (not isinstance(content, str) or not content.strip()) and message.get("reasoning_content"):
+        content = message.get("reasoning_content", "")
     return normalize_model_output(content)
 
 
-async def send_slack_response(response_url: str, text: str) -> None:
+def _format_user_plus_reply(*, user_raw: str, reply: str) -> str:
+    """Keep the user's slash text visible alongside the model reply (Slack mrkdwn)."""
+    preview = user_raw.strip()
+    if len(preview) > 1500:
+        preview = preview[:1497] + "..."
+    return f"*Your message*\n```{preview}```\n\n*Reply*\n{reply}"
+
+
+async def send_slack_response(
+    response_url: str,
+    text: str,
+    *,
+    response_type: str | None = None,
+) -> None:
+    rtype = response_type or SLACK_REPLY_VISIBILITY
     async with httpx.AsyncClient(timeout=20) as client:
         await client.post(
             response_url,
             json={
-                "response_type": "ephemeral",
+                "response_type": rtype,
                 "text": text,
+                # Do not replace the slash-command line / first ephemeral with only the reply.
+                "replace_original": False,
             },
         )
 
@@ -142,10 +182,16 @@ async def process_agent_request_async(raw_text: str, response_url: str) -> None:
                 f"`{SLACK_COMMAND_NAME} your question` or "
                 f"`{SLACK_COMMAND_NAME} agent-id::your question`."
             )
-        else:
-            output = await query_inference_hub(agent=agent, prompt=prompt)
+            await send_slack_response(response_url, output, response_type="ephemeral")
+            return
+
+        model_text = await query_inference_hub(agent=agent, prompt=prompt)
+        output = _format_user_plus_reply(user_raw=raw_text, reply=model_text)
     except Exception as exc:  # noqa: BLE001 - user-facing error path
-        output = f"❌ Error while contacting Inference Hub: {exc}"
+        output = _format_user_plus_reply(
+            user_raw=raw_text,
+            reply=f"❌ Error while contacting Inference Hub: {exc}",
+        )
 
     await send_slack_response(response_url, output)
 
@@ -157,6 +203,7 @@ async def healthcheck() -> dict[str, bool]:
 
 @app.post("/slack/commands")
 async def slack_commands(request: Request, background_tasks: BackgroundTasks) -> dict[str, str]:
+    require_slack_runtime_config()
     raw_body = await request.body()
 
     timestamp = request.headers.get("X-Slack-Request-Timestamp")
