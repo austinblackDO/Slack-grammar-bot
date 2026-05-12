@@ -5,20 +5,7 @@
     "name": "slack-grammar-bot",
     "namespace": "dogfish",
     "scale": 1,
-    "auto_tls": true,
-    "tls_domains": ["slack-grammar-bot.dogfish.internal.digitalocean.com"],
-    "deployment_strategy": {
-      "canary": {
-        "increment": 50,
-        "interval": 120
-      },
-      "proxy_ports": [
-        {
-          "port": 8080,
-          "protocol": "http"
-        }
-      ]
-    },
+    "auto_tls": false,
     "containers": {
       "app": {
         "image": "docker.internal.digitalocean.com/dogfish/slack-grammar-bot:manual",
@@ -29,18 +16,28 @@
         "secrets": [
           {
             "type": "env",
-            "path": "secret-versioned/data/dogfish/slack-grammar-bot/puff",
-            "key": "SLACK_SIGNING_SECRET"
+            "path": "secret-versioned/data/solutions/slack-grammar-bot/puff",
+            "key": "SLACK_APP_TOKEN"
           },
           {
             "type": "env",
-            "path": "secret-versioned/data/dogfish/slack-grammar-bot/puff",
+            "path": "secret-versioned/data/solutions/slack-grammar-bot/puff",
+            "key": "SLACK_BOT_TOKEN"
+          },
+          {
+            "type": "env",
+            "path": "secret-versioned/data/solutions/slack-grammar-bot/puff",
             "key": "INFERENCE_HUB_MODEL_ACCESS_KEY"
           },
           {
             "type": "env",
-            "path": "secret-versioned/data/dogfish/slack-grammar-bot/puff",
+            "path": "secret-versioned/data/solutions/slack-grammar-bot/puff",
             "key": "INFERENCE_HUB_DEFAULT_AGENT"
+          },
+          {
+            "type": "env",
+            "path": "secret-versioned/data/solutions/slack-grammar-bot/puff",
+            "key": "INFERENCE_HUB_BASE_URL"
           }
         ],
         "check": {

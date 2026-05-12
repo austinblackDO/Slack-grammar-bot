@@ -1,139 +1,136 @@
-# Slackbot for DigitalOcean Inference Hub
+# Slack Grammar Bot (Socket Mode + Inference Hub)
 
-FastAPI Slack slash-command bot that routes prompts to DigitalOcean Inference Hub agents/models.
+Python service that connects to Slack with **Socket Mode** (outbound WebSocket), handles a slash command, sends the user prompt to **DigitalOcean Inference Hub** (`.../chat/completions`), and replies asynchronously through Slack's `response_url`.
 
-## What this bot does
+Socket Mode means local and DOCC deployments do **not** need a public Slack request URL, Cloudflare tunnel, or externally resolvable DNS for Slack callbacks. The container still exposes `GET /healthz` on `PORT` for readiness checks.
 
-- Verifies Slack request signatures
-- Accepts slash command payloads at `POST /slack/commands`
-- Sends prompt to DigitalOcean Inference Hub (`/v1/chat/completions`)
-- Replies asynchronously to Slack via `response_url`
-- Supports optional per-request agent override:
-  - `/grammar your question`
-  - `/grammar agent-id::your question`
+---
 
-## 1) Prerequisites
+## Features
 
-- Slack app with a slash command (example: `/grammar`)
-- DigitalOcean Inference Hub model access key
-- A model/agent ID available in your Inference Hub account
-- Python 3.10+
+| Area | Behavior |
+|------|----------|
+| **Slack** | Uses `SLACK_APP_TOKEN` (`xapp-...`) and `SLACK_BOT_TOKEN` (`xoxb-...`) over Socket Mode. Immediate ephemeral ack (`Thinking...`), then delayed reply via Slack's response URL. |
+| **Inference Hub** | OpenAI-style chat payload; optional `agent-id::prompt` override. Serverless URLs send `model`; GenAI Agent hosts (`agents.do-ai.run`) omit top-level `model` per deployment URL. |
+| **Operations** | `GET /healthz` always returns `{"ok":true}` on the local container port. No inbound Slack route is required. |
 
-## 2) Environment variables
+---
 
-Copy `.env.example` to `.env` and fill values:
+## Repository Layout
+
+| Path | Purpose |
+|------|---------|
+| `app/main.py` | Socket Mode worker, Inference Hub client, and `/healthz` server. |
+| `requirements.txt` | Python dependencies (`slack-bolt`, `httpx`, `python-dotenv`). |
+| `Dockerfile` | Python 3.11 runtime, starts `python -m app.main`. |
+| `Makefile` | Local helpers for install, run, health check, and Docker. |
+| `docc/manifest.json` | DOCC deployment manifest with Socket Mode secrets from Vault. |
+| `docc/vault-puff-secrets.example.json` | Example Vault payload (copy to `vault-puff-secrets.json`, gitignored). |
+| `.env.example` | Local env template. |
+
+---
+
+## Slack App Setup
+
+1. Enable **Socket Mode** in the Slack app.
+2. Create an **app-level token** with `connections:write`; put it in `SLACK_APP_TOKEN`.
+3. Add a bot token with scopes:
+   - `commands`
+   - `chat:write` (recommended for replies)
+4. Create the slash command (default docs use `/grammar`).
+5. Install or reinstall the app to your workspace.
+
+With Socket Mode enabled, this app receives the slash command over Slack's outbound WebSocket connection. You do not need Cloudflare Tunnel for local testing.
+
+---
+
+## Environment Variables
+
+Copy the example file and edit:
 
 ```bash
 cp .env.example .env
 ```
 
-Required (the app exits at import time if any are missing):
+Required:
 
-- `SLACK_SIGNING_SECRET` — Slack app → Basic Information → Signing Secret
-- `INFERENCE_HUB_MODEL_ACCESS_KEY` — Inference Hub model access key (Bearer token for `/v1/chat/completions`). **Alias:** you may set `MODEL_ACCESS_KEY` instead; the code reads `INFERENCE_HUB_MODEL_ACCESS_KEY` first, then falls back to `MODEL_ACCESS_KEY`.
-- `INFERENCE_HUB_DEFAULT_AGENT` — default model id when the user does not use `agent-id::...` (must be an id your account can call; confirm via `GET /v1/models` if needed)
+| Variable | Description |
+|----------|-------------|
+| `SLACK_APP_TOKEN` | Slack app-level token (`xapp-...`) with `connections:write`. |
+| `SLACK_BOT_TOKEN` | Slack bot token (`xoxb-...`) with slash command permissions. |
+| `INFERENCE_HUB_MODEL_ACCESS_KEY` | Inference Hub Bearer token. Alias: `MODEL_ACCESS_KEY`. |
+| `INFERENCE_HUB_DEFAULT_AGENT` | Default model/agent id when the user does not use `agent-id::...`. |
 
 Optional:
 
-- `INFERENCE_HUB_BASE_URL` — default `https://inference.do-ai.run/v1`
-- `INFERENCE_HUB_SYSTEM_PROMPT` — system message for every request; has a built-in default if unset
-- `SLACK_COMMAND_NAME` — default `/grammar`; only used in usage text (your Slack app must still define the real slash command to match)
-- `SLACK_REPLY_VISIBILITY` — `ephemeral` (default) or `in_channel`. The delayed reply **always echoes your original slash text**; set `in_channel` if you want that reply as a normal channel message everyone sees in history (the initial “Thinking…” stays ephemeral).
+| Variable | Default / notes |
+|----------|------------------|
+| `PORT` | `8080`; used only for local/DOCC health checks. |
+| `INFERENCE_HUB_BASE_URL` | `https://inference.do-ai.run/v1`. For hosted GenAI agents, use `https://YOUR_AGENT.agents.do-ai.run/api/v1`. |
+| `INFERENCE_HUB_SYSTEM_PROMPT` | Built-in Slack-oriented system message if unset. |
+| `SLACK_COMMAND_NAME` | `/grammar`; must match the Slack slash command. |
+| `SLACK_REPLY_VISIBILITY` | `ephemeral` (default) or `in_channel` for the delayed reply. |
+| `LOG_LEVEL` | `INFO` by default. |
 
-## 3) Run locally
+---
+
+## Run Locally
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
-uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+make install
+make run
 ```
 
-Health endpoint:
+In another terminal:
 
 ```bash
-curl http://localhost:8000/healthz
+make healthz
 ```
 
-Expected:
+Expected: `{"ok":true}`.
 
-```json
-{"ok":true}
+Then run the slash command in Slack:
+
+```text
+/grammar summarize this incident report
+/grammar anthropic/claude-3-5-sonnet::draft a release note from this text
 ```
 
-## 4) Slack setup
+---
 
-In your Slack app:
-
-1. Create slash command `/grammar`
-2. Request URL:
-   - local dev via tunnel: `https://<your-ngrok-domain>/slack/commands`
-   - production: `https://<your-app-domain>/slack/commands`
-3. Enable scopes (minimum):
-   - `commands`
-4. Install/reinstall app to workspace
-
-Slash command examples:
-
-- `/grammar summarize this incident report`
-- `/grammar anthropic/claude-3-5-sonnet::draft a release note from this text`
-
-## 5) docc (DigitalOcean internal)
-
-For deploying on **docc** (VPN), follow the internal guides—this repo’s `Dockerfile` is compatible with the usual flow: build for **`linux/amd64`**, tag and **push** to `docker.internal.digitalocean.com`, then **`docc deploy`** with a **`manifest.json`** (explicit image tag or digest; **not** `latest`). Use **`--secret-auth token,<token>`** (or your team’s auth) when the manifest references [Turtle Vault / `secrets`](https://docc-user-guide.internal.digitalocean.com/applications/secrets.html).
-
-**Primary references (internal):**
-
-- [Getting Started with docc](https://docc-getting-started.internal.digitalocean.com/) — [Setup / CLI](https://docc-getting-started.internal.digitalocean.com/part1/setup.html), [Containerizing](https://docc-getting-started.internal.digitalocean.com/part1/containerizing-the-application.html), [Deploying](https://docc-getting-started.internal.digitalocean.com/part1/deploying-the-application.html)
-- [docc User Guide](https://docc-user-guide.internal.digitalocean.com/introduction.html) — [Installation](https://docc-user-guide.internal.digitalocean.com/installation.html), [Secrets](https://docc-user-guide.internal.digitalocean.com/applications/secrets.html)
-
-**docc-oriented container checks:**
+## Docker
 
 ```bash
-docker build -t docker.internal.digitalocean.com/$MY_NAME/slack-grammar-bot:v1 --platform linux/amd64 .
-docker run --rm -p 8080:8080 --env-file .env docker.internal.digitalocean.com/$MY_NAME/slack-grammar-bot:v1
+docker build -t slack-grammar-bot:local .
+docker run --rm -p 8080:8080 --env-file .env slack-grammar-bot:local
 curl -s http://localhost:8080/healthz
 ```
 
-Then `docker push …` and point your manifest’s container `image` at that tag before `docc deploy`.
+---
 
-## 6) Deploy on DigitalOcean App Platform (public cloud)
+## DOCC and Turtle Vault
 
-This repo also includes:
-
-- `Dockerfile`
-- `do-app.yaml` app spec
-
-### Option A: One-click from spec
+Populate Vault using the example payload:
 
 ```bash
-doctl apps create --spec do-app.yaml
+cp docc/vault-puff-secrets.example.json docc/vault-puff-secrets.json
+# Edit docc/vault-puff-secrets.json (never commit real secrets)
+
+vault kv put -mount=secret-versioned solutions/slack-grammar-bot/puff @docc/vault-puff-secrets.json
 ```
 
-Then set app-level environment variables in App Platform UI (or in the spec if you prefer managed secrets).
+`docc/manifest.json` intentionally avoids public TLS domains and proxy ports for Slack. Slack traffic is outbound Socket Mode; the exposed container port is only for `GET /healthz`.
 
-### Option B: App Platform via GitHub UI
+---
 
-1. Push this repo to GitHub
-2. Create App in DigitalOcean App Platform from repository
-3. Choose Dockerfile build
-4. Set runtime env vars:
-   - `SLACK_SIGNING_SECRET` (secret)
-   - `INFERENCE_HUB_MODEL_ACCESS_KEY` (secret)
-   - `INFERENCE_HUB_DEFAULT_AGENT`
-   - optional `INFERENCE_HUB_SYSTEM_PROMPT`
-5. Deploy
+## Verify End-to-End
 
-Once deployed, copy your app URL into the Slack slash command Request URL and reinstall the Slack app.
+1. Start the service locally or in DOCC.
+2. Confirm `/healthz` returns `{"ok":true}`.
+3. In Slack, run `/grammar hello`.
+4. Confirm immediate ephemeral `Thinking...`.
+5. Confirm the delayed reply includes your original text and the model response.
 
-## 7) Verify end-to-end
-
-1. Run `/grammar hello` in Slack
-2. Confirm immediate ephemeral ack (`🤖 Thinking...`)
-3. Confirm follow-up response from Inference Hub
-4. Check App Platform or docc logs if failures occur
-
-## Notes
-
-- Slack requires the command endpoint to respond within ~3 seconds. The app acks immediately and handles inference in background.
-- Error text from Inference Hub is truncated and returned to Slack to simplify debugging.
+Inference Hub errors are surfaced in Slack and also logged by the process.

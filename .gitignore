@@ -5,9 +5,11 @@ internal-docs/
 venv/
 __pycache__/
 .pytest_cache/
+.ruff_cache/
 .env
 .env.*
 !.env.example
 
-# Local Vault payload for `vault kv put @...` (see docc/vault-puff-secrets.example.json)
-docc/vault-puff-secrets.json
+# Vault JSON payloads for `vault kv put @...` (never commit real secrets)
+docc/**/vault*.json
+!docc/**/*.example.json

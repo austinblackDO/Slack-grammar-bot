@@ -2,18 +2,21 @@ name: slackbot-inference-hub
 region: nyc
 services:
   - name: slackbot-api
-    environment_slug: python
+    # Socket Mode uses outbound WebSockets to Slack; no public slash-command URL is needed.
     instance_count: 1
     instance_size_slug: basic-xxs
     http_port: 8080
-    run_command: uvicorn app.main:app --host 0.0.0.0 --port 8080
     source_dir: /
+    dockerfile_path: Dockerfile
     github:
       repo: REPLACE_WITH_YOUR_GITHUB_REPO
       branch: cursor/slackbot-inference-hub-setup-51e2
       deploy_on_push: true
     envs:
-      - key: SLACK_SIGNING_SECRET
+      - key: SLACK_APP_TOKEN
+        scope: RUN_TIME
+        type: SECRET
+      - key: SLACK_BOT_TOKEN
         scope: RUN_TIME
         type: SECRET
       - key: INFERENCE_HUB_MODEL_ACCESS_KEY
