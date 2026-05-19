@@ -6,6 +6,18 @@
     "namespace": "dogfish",
     "scale": 1,
     "auto_tls": false,
+    "deployment_strategy": {
+      "canary": {
+        "increment": 50,
+        "interval": 120
+      },
+      "proxy_ports": [
+        {
+          "port": 8080,
+          "protocol": "http"
+        }
+      ]
+    },
     "containers": {
       "app": {
         "image": "docker.internal.digitalocean.com/dogfish/slack-grammar-bot:manual",
