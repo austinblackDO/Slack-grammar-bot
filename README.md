@@ -20,7 +20,11 @@ Socket Mode means local and DOCC deployments do **not** need a public Slack requ
 
 | Path | Purpose |
 |------|---------|
-| `app/main.py` | Socket Mode worker, Inference Hub client, and `/healthz` server. |
+| `app/main.py` | Entry point: loads settings, starts health server and Socket Mode. |
+| `app/bot.py` | Slack slash-command handlers (Bolt lazy listeners). |
+| `app/inference.py` | Inference Hub HTTP client. |
+| `app/config.py` | Environment-backed `Settings` and validation. |
+| `app/health.py` | Background `/healthz` server for DOCC readiness. |
 | `requirements.txt` | Python dependencies (`slack-bolt`, `httpx`, `python-dotenv`). |
 | `Dockerfile` | Python 3.11 runtime, starts `python -m app.main`. |
 | `Makefile` | Local helpers for install, run, health check, and Docker. |
