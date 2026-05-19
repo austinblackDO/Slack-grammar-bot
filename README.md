@@ -36,15 +36,24 @@ Socket Mode means local and DOCC deployments do **not** need a public Slack requ
 
 ## Slack App Setup
 
-1. Enable **Socket Mode** in the Slack app.
-2. Create an **app-level token** with `connections:write`; put it in `SLACK_APP_TOKEN`.
-3. Add a bot token with scopes:
-   - `commands`
-   - `chat:write` (recommended for replies)
-4. Create the slash command (default docs use `/grammar`).
-5. Install or reinstall the app to your workspace.
+**Create from manifest:** In [api.slack.com/apps](https://api.slack.com/apps) choose **Create New App** → **From an app manifest**, pick the target workspace, and upload [`slack-app-manifest.yaml`](slack-app-manifest.yaml) or [`slack-app-manifest.json`](slack-app-manifest.json).
 
-With Socket Mode enabled, this app receives the slash command over Slack's outbound WebSocket connection. You do not need Cloudflare Tunnel for local testing.
+The manifest configures:
+
+- **Socket Mode** (no slash-command request URL)
+- **Bot scopes** `commands`, `chat:write`
+- Slash command **`/grammar`**
+
+(`connections:write` is **not** valid in the manifest JSON — create the app-level token manually after creation.)
+
+After creation:
+
+1. **Install to workspace** (OAuth) → copy `SLACK_BOT_TOKEN` (`xoxb-...`).
+2. **Settings → Socket Mode** → enable if not already on.
+3. **Settings → Basic Information → App-Level Tokens** → **Generate** → scope `connections:write` → `SLACK_APP_TOKEN` (`xapp-...`).
+4. Put both tokens in `.env` or Vault (see below).
+
+With Socket Mode enabled, this app receives the slash command over Slack's outbound WebSocket connection. You do not need Cloudflare Tunnel or a public URL for Slack.
 
 ---
 

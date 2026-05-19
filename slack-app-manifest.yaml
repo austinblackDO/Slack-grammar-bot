@@ -1,0 +1,28 @@
+_metadata:
+  major_version: 2
+  minor_version: 1
+
+display_information:
+  name: GrammarBot
+  description: Grammar and writing help via slash command and Socket Mode.
+  background_color: "#1a1a2e"
+
+features:
+  bot_user:
+    display_name: GrammarBot
+    always_online: true
+  slash_commands:
+    - command: /grammar
+      description: Ask GrammarBot to review or improve your text
+      should_escape: false
+
+oauth_config:
+  scopes:
+    bot:
+      - commands
+      - chat:write
+
+settings:
+  org_deploy_enabled: false
+  socket_mode_enabled: true
+  token_rotation_enabled: false
