@@ -1,4 +1,4 @@
 httpx
 python-dotenv
-slack-bolt
+slack-bolt>=1.18.0
 websocket-client

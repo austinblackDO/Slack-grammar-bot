@@ -1,6 +1,7 @@
 # Local mirror of internal doc sites (do not commit)
 internal-docs/
 
+.config/
 .venv/
 venv/
 __pycache__/
