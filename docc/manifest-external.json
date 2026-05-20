@@ -20,7 +20,7 @@
     },
     "containers": {
       "app": {
-        "image": "docker.internal.digitalocean.com/dogfish/slack-grammar-bot:manual",
+        "image": "docker.internal.digitalocean.com/dogfish/slack-grammar-bot:534f621",
         "ports": [8080],
         "env": {
           "PORT": "8080"
